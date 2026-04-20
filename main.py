@@ -3,6 +3,39 @@ import json
 import requests
 import re
 import time
+import sys
+import subprocess
+
+# --- 라이브러리 자동 설치 로직 ---
+def install_dependencies():
+    required = ["requests", "beautifulsoup4", "yt-dlp", "static-ffmpeg", "playwright"]
+    missing = []
+    
+    for lib in required:
+        pkg_name = "beautifulsoup4" if lib == "beautifulsoup4" else lib
+        try:
+            __import__(lib.replace("-", "_"))
+        except ImportError:
+            missing.append(lib)
+    
+    if missing:
+        print(f"누락된 라이브러리 설치 중: {', '.join(missing)}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+        
+        if "playwright" in missing:
+            print("브라우저(Chromium) 설치 중...")
+            subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+        
+        print("설치 완료! 프로그램을 다시 시작합니다.\n")
+        os.execv(sys.executable, ['python'] + sys.argv)
+
+if __name__ == "__main__":
+    # 메인 로직 실행 전 설치 확인
+    if not os.environ.get("SKIP_DEP_CHECK"):
+        os.environ["SKIP_DEP_CHECK"] = "1"
+        install_dependencies()
+
+# --- 기존 로직 시작 ---
 from bs4 import BeautifulSoup
 import yt_dlp
 from static_ffmpeg import add_paths
@@ -36,21 +69,17 @@ class HansungDownloader:
             json.dump(config, f, indent=4, ensure_ascii=False)
 
     def login(self):
-        # 1. 기존 저장된 쿠키 확인
         if 'moodle_session' in self.config:
             self.session.cookies.set('MoodleSession', self.config['moodle_session'], domain='learn.hansung.ac.kr')
             if self.check_login_success(silent=True):
                 print("저장된 세션으로 로그인되었습니다.")
                 return True
 
-        # 2. 브라우저 자동화 로그인 (Playwright)
         print("\n브라우저를 통해 자동 로그인을 시도합니다...")
-        
         username = self.config.get('username')
         password = self.config.get('password')
         
         if not username or not password:
-            print("아이디와 비밀번호 정보가 없습니다.")
             username = input("학번: ").strip()
             password = input("비밀번호: ").strip()
             self.config['username'] = username
@@ -59,46 +88,28 @@ class HansungDownloader:
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True) # 눈에 안 보이게 실행
+                browser = p.chromium.launch(headless=True)
                 context = browser.new_context(user_agent=self.session.headers['User-Agent'])
                 page = context.new_page()
-                
-                print(f"로그인 페이지 접속 중... ({self.login_url})")
                 page.goto(self.login_url)
-                
-                # 입력 필드 대기 및 입력
                 page.wait_for_selector("#input-username")
                 page.fill("#input-username", username)
                 page.fill("#input-password", password)
-                
-                print("로그인 버튼 클릭...")
-                # submit 버튼 클릭 또는 Enter
                 page.click("input[type='submit']")
-                
-                # 로그인 후 메인 페이지 또는 대시보드로 이동할 때까지 대기
-                # URL이 바뀌거나 특정 요소(로그아웃 버튼 등)가 나타날 때까지 대기
                 try:
                     page.wait_for_url(lambda url: "login.php" not in url, timeout=10000)
-                    print("로그인 프로세스 통과!")
-                except:
-                    print("로그인 후 페이지 이동이 지연되거나 실패했습니다.")
-                
-                # 쿠키 추출
+                except: pass
                 cookies = context.cookies()
                 moodle_session = next((c['value'] for c in cookies if c['name'] == 'MoodleSession'), None)
-                
                 browser.close()
-                
                 if moodle_session:
                     self.config['moodle_session'] = moodle_session
                     self.save_config(self.config)
                     self.session.cookies.set('MoodleSession', moodle_session, domain='learn.hansung.ac.kr')
-                    if self.check_login_success():
-                        return True
+                    if self.check_login_success(): return True
         except Exception as e:
             print(f"브라우저 로그인 중 오류 발생: {e}")
 
-        # 4. 최후의 수단: 수동 입력
         print("\n자동 로그인이 실패했습니다. 수동으로 쿠키를 입력해주세요.")
         moodle_session = input("MoodleSession: ").strip()
         if moodle_session:
@@ -106,7 +117,6 @@ class HansungDownloader:
             self.save_config(self.config)
             self.session.cookies.set('MoodleSession', moodle_session, domain='learn.hansung.ac.kr')
             return self.check_login_success()
-        
         return False
 
     def check_login_success(self, silent=False):
@@ -116,8 +126,7 @@ class HansungDownloader:
                 if not silent:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     user_name = soup.select_one(".user_name, .userinfo, .my-name, .fullname")
-                    name = user_name.get_text().strip() if user_name else "사용자"
-                    print(f"로그인 성공! ({name}님)")
+                    print(f"로그인 성공! ({user_name.get_text().strip() if user_name else '사용자'}님)")
                 return True
         except: pass
         return False
@@ -129,7 +138,6 @@ class HansungDownloader:
         course_elements = soup.select(".course_box, .course_link, .course_lists .course_link, .fullname")
         if not course_elements:
             course_elements = [a for a in soup.find_all('a', href=True) if '/course/view.php?id=' in a['href']]
-
         for element in course_elements:
             link_tag = element if element.name == 'a' else element.find('a')
             if not link_tag or '/course/view.php?id=' not in link_tag.get('href', ''): continue
@@ -152,7 +160,6 @@ class HansungDownloader:
             if week_section:
                 week_attr = week_section.get("aria-label", "")
                 if week_attr: week_name = week_attr.split('[')[0].strip()
-            
             link_tag = element.find("a")
             if not link_tag: continue
             viewer_url = ""
@@ -164,7 +171,6 @@ class HansungDownloader:
                 href = link_tag.get('href', '')
                 if 'viewer.php' in href or 'view.php' in href:
                     viewer_url = href if 'viewer.php' in href else href.replace('view.php', 'viewer.php')
-
             if viewer_url:
                 title = link_tag.select_one(".instancename").get_text().replace(" 동영상", "").strip() if link_tag.select_one(".instancename") else "영상"
                 videos.append({"week": week_name, "url": viewer_url, "title": title})
@@ -182,75 +188,47 @@ class HansungDownloader:
         return None
 
     def download_video(self, m3u8_url, output_path):
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': output_path,
-            'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
-        }
+        ydl_opts = {'format': 'best', 'outtmpl': output_path, 'quiet': True, 'no_warnings': True, 'nocheckcertificate': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            for cookie in self.session.cookies:
-                ydl.cookiejar.set_cookie(cookie)
+            for cookie in self.session.cookies: ydl.cookiejar.set_cookie(cookie)
             ydl.download([m3u8_url])
 
     def run(self):
         if not self.login(): return
-        
         while True:
             courses = self.get_course_list()
             if not courses: print("과목 목록 로드 실패."); break
-
-            print("\n" + "="*30)
-            print(" [한성대 영상 다운로더] ")
-            print("="*30)
+            print("\n" + "="*30 + "\n [한성대 영상 다운로더] \n" + "="*30)
             for c in courses: print(f"{c['id']}. {c['title']}")
             print("q. 종료")
-            
             c_choice = input("\n과목 번호 입력: ").strip().lower()
             if c_choice == 'q': break
-            
             try:
                 course = courses[int(c_choice)]
                 videos = self.get_video_list(course['url'])
                 print(f"\n[{course['title']}] {len(videos)}개의 영상을 찾았습니다.")
-                
                 if not videos: continue
-
-                for i, v in enumerate(videos, 1):
-                    print(f"  {i}. [{v['week']}] {v['title']}")
-                
+                for i, v in enumerate(videos, 1): print(f"  {i}. [{v['week']}] {v['title']}")
                 print("\n선택: 숫자(예: 1,2,5), 'all'(전체), 'b'(뒤로)")
                 v_choice = input("입력: ").strip().lower()
                 if v_choice == 'b': continue
-                
                 selected_indices = list(range(len(videos))) if v_choice == 'all' else [int(x.strip()) - 1 for x in v_choice.split(',')]
-                
                 for idx in selected_indices:
                     if 0 <= idx < len(videos):
                         v = videos[idx]
                         m3u8_url = self.extract_m3u8(v['url'])
                         if m3u8_url:
-                            clean_course = re.sub(r'[\\/:*?"<>|]', '_', course['title'])
-                            clean_week = re.sub(r'[\\/:*?"<>|]', '_', v['week'])
-                            clean_title = re.sub(r'[\\/:*?"<>|]', '_', v['title'])
-                            
-                            filename = f"{clean_course}_{clean_week}_{idx+1:02d}_{clean_title}.mp4"
-                            save_dir = os.path.join(self.config['download_path'], clean_course)
+                            filename = f"{re.sub(r'[\\/:*?\"<>|]', '_', course['title'])}_{re.sub(r'[\\/:*?\"<>|]', '_', v['week'])}_{idx+1:02d}_{re.sub(r'[\\/:*?\"<>|]', '_', v['title'])}.mp4"
+                            save_dir = os.path.join(self.config['download_path'], re.sub(r'[\\/:*?\"<>|]', '_', course['title']))
                             if not os.path.exists(save_dir): os.makedirs(save_dir)
-                            
                             path = os.path.join(save_dir, filename)
-                            if os.path.exists(path): print(f"[Pass] {filename}"); continue
-                            
-                            print(f"Downloading: {filename}...")
-                            try:
-                                self.download_video(m3u8_url, path)
-                                print(f"Done: {filename}")
-                            except Exception as e: print(f"Fail: {e}")
-                        else:
-                            print(f"m3u8 추출 실패: {v['title']}")
-            except Exception as e:
-                print(f"에러 발생: {e}")
-        
+                            if os.path.exists(path): print(f"[건너뛰기] {filename}"); continue
+                            print(f"Downloading: {filename}..."); self.download_video(m3u8_url, path); print(f"Done: {filename}")
+                        else: print(f"m3u8 추출 실패: {v['title']}")
+            except Exception as e: print(f"에러 발생: {e}")
         print("프로그램을 종료합니다.")
 
 if __name__ == "__main__":
+    # install_dependencies() 가 호출된 후 실제 앱 실행
+    # (이미 위 if __name__ == "__main__" 블록에서 처리됨)
     HansungDownloader().run()
