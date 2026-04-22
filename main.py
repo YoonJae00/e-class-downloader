@@ -12,9 +12,11 @@ def install_dependencies():
     missing = []
     
     for lib in required:
-        pkg_name = "beautifulsoup4" if lib == "beautifulsoup4" else lib
         try:
-            __import__(lib.replace("-", "_"))
+            if lib == "beautifulsoup4":
+                __import__("bs4")
+            else:
+                __import__(lib.replace("-", "_"))
         except ImportError:
             missing.append(lib)
     
@@ -26,8 +28,8 @@ def install_dependencies():
             print("브라우저(Chromium) 설치 중...")
             subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
         
-        print("설치 완료! 프로그램을 다시 시작합니다.\n")
-        os.execv(sys.executable, ['python'] + sys.argv)
+        print("설치 완료! 프로그램을 다시 실행해주세요.\n")
+        sys.exit(0)
 
 if __name__ == "__main__":
     # 메인 로직 실행 전 설치 확인
